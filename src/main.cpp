@@ -1,94 +1,124 @@
 #include "main.h"
 
-/**
- * A callback function for LLEMU's center button.
- *
- * When this callback is fired, it will toggle line 2 of the LCD text between
- * "I was pressed!" and nothing.
- */
-void on_center_button() {
+// Motor and IMU ports
+#define LEFT_MOTORS {1, -2, 3}
+#define RIGHT_MOTORS {-4, 5, -6}
+#define IMU_PORT 16 // IMU port
+
+// Define the localizer using the VOSS library
+auto odom = voss::localizer::TrackingWheelLocalizerBuilder::new_builder()
+				.with_left_motor(1)
+				.with_right_motor(-4)
+				.with_track_width(11)		// Adjust based on your robot's configuration
+				.with_left_right_tpi(18.43) // Adjust TPI based on your calibration
+				.with_imu(IMU_PORT)
+				.build();
+
+// Exit Conditions
+auto ec = voss::controller::ExitConditions::new_conditions()
+			  .add_settle(400, 0.5, 400)
+			  .add_tolerance(1.0, 2.0, 200)
+			  .add_timeout(22500)
+			  .add_thru_smoothness(4)
+			  .build();
+
+// Define PID Controller
+auto pid = voss::controller::PIDControllerBuilder::new_builder(odom)
+			   .with_linear_constants(20, 0.02, 169)
+			   .with_angular_constants(250, 0.05, 2435)
+			   .with_min_error(5)
+			   .with_min_vel_for_thru(100)
+			   .build();
+
+// Define DiffChassis
+auto chassis = voss::chassis::DiffChassis(LEFT_MOTORS, RIGHT_MOTORS, pid, ec, 8, pros::E_MOTOR_BRAKE_COAST);
+
+void on_center_button()
+{
 	static bool pressed = false;
 	pressed = !pressed;
-	if (pressed) {
+	if (pressed)
+	{
 		pros::lcd::set_text(2, "I was pressed!");
-	} else {
+	}
+	else
+	{
 		pros::lcd::clear_line(2);
 	}
 }
 
-/**
- * Runs initialization code. This occurs as soon as the program is started.
- *
- * All other competition modes are blocked by initialize; it is recommended
- * to keep execution time for this mode under a few seconds.
- */
-void initialize() {
+void initialize()
+{
 	pros::lcd::initialize();
 	pros::lcd::set_text(1, "Hello PROS User!");
-
 	pros::lcd::register_btn1_cb(on_center_button);
+
+	// Start odometry localization
+	// odom->begin_localization();
+	pros::delay(3000); // Wait for 3 seconds
 }
 
-/**
- * Runs while the robot is in the disabled state of Field Management System or
- * the VEX Competition Switch, following either autonomous or opcontrol. When
- * the robot is enabled, this task will exit.
- */
 void disabled() {}
 
-/**
- * Runs after initialize(), and before autonomous when connected to the Field
- * Management System or the VEX Competition Switch. This is intended for
- * competition-specific initialization routines, such as an autonomous selector
- * on the LCD.
- *
- * This task will exit when the robot is enabled and autonomous or opcontrol
- * starts.
- */
 void competition_initialize() {}
 
-/**
- * Runs the user autonomous code. This function will be started in its own task
- * with the default priority and stack size whenever the robot is enabled via
- * the Field Management System or the VEX Competition Switch in the autonomous
- * mode. Alternatively, this function may be called in initialize or opcontrol
- * for non-competition testing purposes.
- *
- * If the robot is disabled or communications is lost, the autonomous task
- * will be stopped. Re-enabling the robot will restart the task, not re-start it
- * from where it left off.
- */
-void autonomous() {}
+void autonomous()
+{
+	// Add autonomous code here using VOSS library
+}
 
-/**
- * Runs the operator control code. This function will be started in its own task
- * with the default priority and stack size whenever the robot is enabled via
- * the Field Management System or the VEX Competition Switch in the operator
- * control mode.
- *
- * If no competition control is connected, this function will run immediately
- * following initialize().
- *
- * If the robot is disabled or communications is lost, the
- * operator control task will be stopped. Re-enabling the robot will restart the
- * task, not resume it from where it left off.
- */
-void opcontrol() {
+void opcontrol()
+{
 	pros::Controller master(pros::E_CONTROLLER_MASTER);
-	pros::MotorGroup left_mg({1, -2, 3});    // Creates a motor group with forwards ports 1 & 3 and reversed port 2
-	pros::MotorGroup right_mg({-4, 5, -6});  // Creates a motor group with forwards port 5 and reversed ports 4 & 6
+	pros::Motor motor(17, pros::v5::MotorGears::green); // Replace 17 with your motor port
+	pros::adi::Pneumatics adi1('a', false);				// Replace 'a' with your first ADI port
 
+	// Configure ADI devices for piston control
+	adi1.retract(); // Set initial piston position (retracted)
+	bool mogo_piston_state = false;
+	bool intake_state = false;
 
-	while (true) {
-		pros::lcd::print(0, "%d %d %d", (pros::lcd::read_buttons() & LCD_BTN_LEFT) >> 2,
-		                 (pros::lcd::read_buttons() & LCD_BTN_CENTER) >> 1,
-		                 (pros::lcd::read_buttons() & LCD_BTN_RIGHT) >> 0);  // Prints status of the emulated screen LCDs
+	std::uint32_t last_toggle_time = 0; // Store the last toggle time
 
-		// Arcade control scheme
-		int dir = master.get_analog(ANALOG_LEFT_Y);    // Gets amount forward/backward from left joystick
-		int turn = master.get_analog(ANALOG_RIGHT_X);  // Gets the turn left/right from right joystick
-		left_mg.move(dir - turn);                      // Sets left motor voltage
-		right_mg.move(dir + turn);                     // Sets right motor voltage
-		pros::delay(20);                               // Run for 20 ms then update
+	while (true)
+	{
+		// Motor control
+		if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L1))
+		{
+			if (pros::millis() - last_toggle_time >= 200)
+			{ // Check if 200 milliseconds have passed
+				intake_state = !intake_state;
+				last_toggle_time = pros::millis();
+			}
+		}
+
+		// Piston control
+		if (master.get_digital(pros::E_CONTROLLER_DIGITAL_L2))
+		{
+			if (pros::millis() - last_toggle_time >= 200)
+			{ // Check if 200 milliseconds have passed
+				mogo_piston_state = !mogo_piston_state;
+				last_toggle_time = pros::millis();
+			}
+		}
+
+		if (intake_state)
+		{
+			motor.move_voltage(-12000);
+		}
+		else
+		{
+			motor.move_voltage(0);
+		}
+
+		if (mogo_piston_state)
+		{
+			adi1.extend();
+		}
+		else
+		{
+			adi1.retract();
+		}
+		pros::delay(20);
 	}
 }
