@@ -67,6 +67,18 @@ void autonomous()
 	// Add autonomous code here using VOSS library
 }
 
+double applyJoystickCurve(double input)
+{
+	// Normalize the input to the range [-1, 1]
+	double normalizedInput = input / 100.0; // Scale input from [-100, 100] to [-1, 1]
+
+	// Apply a quadratic curve for joystick input mapping
+	double mappedSpeed = std::pow(normalizedInput, 2) * (normalizedInput >= 0 ? 0.4 : -0.4);
+
+	// Map speed to the range [-600, 600]
+	return mappedSpeed * 600;
+}
+
 void opcontrol()
 {
 	pros::Controller master(pros::E_CONTROLLER_MASTER);
@@ -77,8 +89,15 @@ void opcontrol()
 	adi1.retract(); // Set initial piston position (retracted)
 	bool mogo_piston_state = false;
 	bool intake_state = false;
+	bool reverse_intake_state = false;
 
 	std::uint32_t last_toggle_time = 0; // Store the last toggle time
+
+	// Initialize motor groups
+	pros::MotorGroup leftMotors({-14, 15, 16});
+	pros::MotorGroup rightMotors({-11, 12, -13});
+	leftMotors.set_brake_mode(pros::motor_brake_mode_e::E_MOTOR_BRAKE_BRAKE);
+	rightMotors.set_brake_mode(pros::motor_brake_mode_e::E_MOTOR_BRAKE_BRAKE);
 
 	while (true)
 	{
@@ -88,6 +107,16 @@ void opcontrol()
 			if (pros::millis() - last_toggle_time >= 200)
 			{ // Check if 200 milliseconds have passed
 				intake_state = !intake_state;
+				last_toggle_time = pros::millis();
+			}
+		}
+
+		// Motor control
+		if (master.get_digital(pros::E_CONTROLLER_DIGITAL_R1))
+		{
+			if (pros::millis() - last_toggle_time >= 200)
+			{ // Check if 200 milliseconds have passed
+				reverse_intake_state = !reverse_intake_state;
 				last_toggle_time = pros::millis();
 			}
 		}
@@ -106,7 +135,16 @@ void opcontrol()
 		{
 			motor.move_voltage(-12000);
 		}
-		else
+		else if (!reverse_intake_state)
+		{
+			motor.move_voltage(0);
+		}
+
+		if (reverse_intake_state)
+		{
+			motor.move_voltage(12000);
+		}
+		else if (!intake_state)
 		{
 			motor.move_voltage(0);
 		}
@@ -119,6 +157,19 @@ void opcontrol()
 		{
 			adi1.retract();
 		}
+
+		// Get joystick inputs
+		double forwardBack = master.get_analog(pros::E_CONTROLLER_ANALOG_LEFT_Y); // Forward/backward input
+		double rotation = master.get_analog(pros::E_CONTROLLER_ANALOG_RIGHT_X);	  // Rotation input
+
+		// Apply joystick curve
+		double leftSpeed = applyJoystickCurve(forwardBack + rotation);
+		double rightSpeed = applyJoystickCurve(forwardBack - rotation);
+
+		// Set motor velocities (±600 RPM)
+		leftMotors.move_velocity(leftSpeed);
+		rightMotors.move_velocity(rightSpeed);
+
 		pros::delay(20);
 	}
 }
